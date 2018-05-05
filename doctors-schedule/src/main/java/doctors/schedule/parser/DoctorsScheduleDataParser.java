@@ -1,6 +1,7 @@
 package doctors.schedule.parser;
 
 import doctors.schedule.model.TimeSlot;
+import lombok.extern.slf4j.Slf4j;
 
 import java.time.LocalTime;
 import java.util.Collections;
@@ -9,6 +10,7 @@ import java.util.List;
 
 import static java.util.Arrays.asList;
 
+@Slf4j
 public class DoctorsScheduleDataParser {
     private static final String RANGE_DELIMITER = "-";
 
@@ -23,22 +25,29 @@ public class DoctorsScheduleDataParser {
             for (int j = 0; j < doctorsSchedule[i].length; ++j) {
                 if (j == 0) {
                     final String fullName = doctorsSchedule[i][0];
-                    System.out.println(fullName);
+                    log.info(fullName);
                 } else {
-                    List<String> rangeParts = splitTime(doctorsSchedule[i][j], RANGE_DELIMITER);
-                    if (rangeParts.size() == 2) {
-                        String from = rangeParts.get(0).trim();
-                        String to = rangeParts.get(1).trim();
-
-                        LocalTime fromTime = LocalTime.parse(from);
-                        LocalTime toTime = LocalTime.parse(to);
-
-                        TimeSlot timeSlot = new TimeSlot(fromTime, toTime);
-                        System.out.println(timeSlot);
-                    }
+                    TimeSlot timeSlot = parseTimeSlot(doctorsSchedule[i][j]);
+                    log.info(String.valueOf(timeSlot));
                 }
             }
         }
+    }
+
+    private TimeSlot parseTimeSlot(String slot) {
+        TimeSlot timeSlot = null;
+        List<String> rangeParts = splitTime(slot, RANGE_DELIMITER);
+        if (rangeParts.size() == 2) {
+            String from = rangeParts.get(0).trim();
+            String to = rangeParts.get(1).trim();
+
+            LocalTime fromTime = LocalTime.parse(from);
+            LocalTime toTime = LocalTime.parse(to);
+
+            timeSlot = new TimeSlot(fromTime, toTime);
+            return timeSlot;
+        }
+        return timeSlot;
     }
 
     private List<String> splitTime(String time, String delimiter) {
