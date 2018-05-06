@@ -40,6 +40,10 @@ public class TimeSlot {
         return start;
     }
 
+    public LocalTime getEnd() {
+        return end;
+    }
+
     @Override
     public String toString() {
         return start.format(TIME_FORMATTER) + " - " + end.format(TIME_FORMATTER);

@@ -1,12 +1,13 @@
 package doctors.schedule.parser;
 
+import doctors.schedule.model.Doctor;
+import doctors.schedule.model.DoctorsSchedule;
 import doctors.schedule.model.TimeSlot;
 import lombok.extern.slf4j.Slf4j;
 
+import java.time.DayOfWeek;
 import java.time.LocalTime;
-import java.util.Collections;
-import java.util.LinkedList;
-import java.util.List;
+import java.util.*;
 
 import static java.util.Arrays.asList;
 
@@ -14,22 +15,35 @@ import static java.util.Arrays.asList;
 public class DoctorsScheduleDataParser {
     private static final String RANGE_DELIMITER = "-";
 
-    private String[][] doctorsSchedule;
+    private String[][] doctorsScheduleData;
 
-    public DoctorsScheduleDataParser(String[][] doctorsSchedule) {
-        this.doctorsSchedule = doctorsSchedule;
+    public DoctorsScheduleDataParser(String[][] doctorsScheduleData) {
+        this.doctorsScheduleData = doctorsScheduleData;
     }
 
     public void parse() {
-        for (int i = 0; i < doctorsSchedule.length; ++i) {
-            for (int j = 0; j < doctorsSchedule[i].length; ++j) {
+        DoctorsSchedule doctorsSchedule = new DoctorsSchedule();
+        for (int i = 0; i < doctorsScheduleData.length; ++i) {
+            Doctor doctor = new Doctor();
+            List<TimeSlot> timeSlotList = new ArrayList<>(6);
+            for (int j = 0; j < doctorsScheduleData[i].length; ++j) {
                 if (j == 0) {
-                    final String fullName = doctorsSchedule[i][0];
+                    final String fullName = doctorsScheduleData[i][0];
                     log.info(fullName);
+                    doctor.setFullName(fullName);
                 } else {
-                    TimeSlot timeSlot = parseTimeSlot(doctorsSchedule[i][j]);
+                    TimeSlot timeSlot = parseTimeSlot(doctorsScheduleData[i][j]);
                     log.info(String.valueOf(timeSlot));
+                    timeSlotList.add(timeSlot);
+                    doctor.getSchedule().put(DayOfWeek.of(j).name(), Arrays.asList(timeSlot));
                 }
+            }
+            if (doctorsSchedule.getDoctorsSchedule().containsKey(doctor.getFullName())) {
+                Doctor editDoctor = doctorsSchedule.getDoctorsSchedule().get(doctor.getFullName());
+                editDoctor.mergeSchedule(doctor.getSchedule());
+
+            } else {
+                doctorsSchedule.getDoctorsSchedule().put(doctor.getFullName(), doctor);
             }
         }
     }
