@@ -7,6 +7,9 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 
+/**
+ * Represents a time slot an {@link Doctor} takes place in. An {@link Doctor} might consist of multiple time slots.
+ */
 public class TimeSlot {
 
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("HH:mm");
@@ -35,7 +38,7 @@ public class TimeSlot {
         return start.isAfter(otherTimeSlot.end) || start.equals(otherTimeSlot.end);
     }
 
-    int compareTo(TimeSlot timeSlot) {
+    private int compareTo(TimeSlot timeSlot) {
         return start.compareTo(timeSlot.start);
     }
 
@@ -79,11 +82,11 @@ public class TimeSlot {
         return mergedInterval;
     }
 
-    public LocalTime getStart() {
+    private LocalTime getStart() {
         return start;
     }
 
-    public LocalTime getEnd() {
+    private LocalTime getEnd() {
         return end;
     }
 
