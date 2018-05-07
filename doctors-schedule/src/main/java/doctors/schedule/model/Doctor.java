@@ -28,19 +28,20 @@ public class Doctor {
     //['ИВАНОВ ИВАН ИВАНОВИЧ', '08:00-12:00', '08:00-10:00', '08:00-16:00', '', '', '', ''],
     public Map<String, List<TimeSlot>> mergeSchedule(Map<String, List<TimeSlot>> schedule) {
         Map<String, List<TimeSlot>> mergedSchedule = new HashMap<>();
-        System.out.println("1111111111111111111111");
+
         for (Map.Entry<String, List<TimeSlot>> entry : this.schedule.entrySet()) {
             DayOfWeek dayOfWeek = DayOfWeek.valueOf(entry.getKey());
             List<TimeSlot> timeSlots = entry.getValue();
-//            System.out.println(dayOfWeek);
-//            List<TimeSlot> dailySchedule = this.schedule.get(entry.getKey());
-//            timeSlots.addAll(schedule.get(dayOfWeek.name()));
 
             List<TimeSlot> mergedTimeSlot =
                     mergeTimeSlot(
                             new ArrayList<TimeSlot>() {{
-                                addAll(schedule.get(dayOfWeek.name()));
-                                addAll(timeSlots);
+                                if (!timeSlots.contains(null)) {
+                                    addAll(timeSlots);
+                                }
+                                if (!schedule.get(dayOfWeek.name()).contains(null)) {
+                                    addAll(schedule.get(dayOfWeek.name()));
+                                }
                             }}
                     );
             mergedSchedule.put(dayOfWeek.name(), mergedTimeSlot);
@@ -56,8 +57,6 @@ public class Doctor {
         List<TimeSlot> intervals = sort(intervalTimeSlots);
 
         TimeSlot pastInterval = intervals.get(0);
-        LocalTime start = pastInterval.getStart();
-        LocalTime end = pastInterval.getEnd();
 
         List<TimeSlot> mergedInterval = new ArrayList<>();
 
@@ -66,7 +65,7 @@ public class Doctor {
 
             // if the current time of slot overlaps with the last time of slot, use the later end time of the two
             // currentInterval.start <= pastInterval.end
-            if (currentInterval.getStart().isBefore(pastInterval.getEnd())) {
+            if (currentInterval.getStart().isBefore(pastInterval.getEnd()) || currentInterval.getStart().equals(pastInterval.getEnd())) {
                 /*// if the first interval can be merged with the currentInterval interval
                 // end = max(currentInterval.end, end);
                 end = currentInterval.getEnd().isAfter(end) ? currentInterval.getEnd() : end;*/

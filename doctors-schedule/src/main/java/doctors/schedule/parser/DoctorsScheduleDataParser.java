@@ -25,7 +25,6 @@ public class DoctorsScheduleDataParser {
         DoctorsSchedule doctorsSchedule = new DoctorsSchedule();
         for (int i = 0; i < doctorsScheduleData.length; ++i) {
             Doctor doctor = new Doctor();
-            List<TimeSlot> timeSlotList = new ArrayList<>(6);
             for (int j = 0; j < doctorsScheduleData[i].length; ++j) {
                 if (j == 0) {
                     final String fullName = doctorsScheduleData[i][0];
@@ -34,14 +33,13 @@ public class DoctorsScheduleDataParser {
                 } else {
                     TimeSlot timeSlot = parseTimeSlot(doctorsScheduleData[i][j]);
                     log.info(String.valueOf(timeSlot));
-                    timeSlotList.add(timeSlot);
-                    doctor.getSchedule().put(DayOfWeek.of(j).name(), Arrays.asList(timeSlot));
+                    doctor.getSchedule().put(DayOfWeek.of(j).name(), Collections.singletonList(timeSlot));
                 }
             }
             if (doctorsSchedule.getDoctorsSchedule().containsKey(doctor.getFullName())) {
                 Doctor editDoctor = doctorsSchedule.getDoctorsSchedule().get(doctor.getFullName());
-                editDoctor.mergeSchedule(doctor.getSchedule());
-
+                doctor.setSchedule(editDoctor.mergeSchedule(doctor.getSchedule()));
+                doctorsSchedule.getDoctorsSchedule().put(doctor.getFullName(), doctor);
             } else {
                 doctorsSchedule.getDoctorsSchedule().put(doctor.getFullName(), doctor);
             }
@@ -49,7 +47,7 @@ public class DoctorsScheduleDataParser {
     }
 
     private TimeSlot parseTimeSlot(String slot) {
-        TimeSlot timeSlot = null;
+        TimeSlot timeSlot;
         List<String> rangeParts = splitTime(slot, RANGE_DELIMITER);
         if (rangeParts.size() == 2) {
             String from = rangeParts.get(0).trim();
@@ -61,7 +59,7 @@ public class DoctorsScheduleDataParser {
             timeSlot = new TimeSlot(fromTime, toTime);
             return timeSlot;
         }
-        return timeSlot;
+        return null;
     }
 
     private List<String> splitTime(String time, String delimiter) {
