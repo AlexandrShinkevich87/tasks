@@ -21,4 +21,9 @@ public class CDRServiceImpl implements CDRService {
     public int addCDR(List<CallDataRecord> callDataRecords, int batchSize) {
         return cdrRepository.addCDR(callDataRecords, batchSize);
     }
+
+    @Override
+    public int totalCDRCount() {
+        return cdrRepository.totalCDRCount();
+    }
 }

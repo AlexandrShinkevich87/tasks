@@ -41,7 +41,7 @@ public class Consumer extends Thread {
             // consuming messages until null value in callDataRecord.id message is received
             while ((callDataRecord = sharedQueue.take()).getId() != null) {
 
-                System.out.println(getName() + " consumed " + callDataRecord);
+//                System.out.println(getName() + " consumed " + callDataRecord);
                 callDataRecordList.add(callDataRecord);
                 row++;
 
@@ -62,6 +62,4 @@ public class Consumer extends Thread {
             e.printStackTrace();
         }
     }
-
-
 }

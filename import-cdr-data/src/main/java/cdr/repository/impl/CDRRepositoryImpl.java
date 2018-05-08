@@ -13,6 +13,7 @@ import javax.annotation.PostConstruct;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.util.List;
+import java.util.stream.IntStream;
 
 @Repository
 @Slf4j
@@ -28,8 +29,10 @@ public class CDRRepositoryImpl implements CDRRepository {
             "CALL_TYPE VARCHAR(256), " +
             "CHARGE REAL, " +
             "CALL_RESULT VARCHAR(256))";
-            ;
+    ;
     private static final String DELETE_TABLE_SQL_QUERY = "DROP TABLE IF EXISTS CDR CASCADE";
+
+    private static final String COUNT_RECORDS_SQL_QUERY = "SELECT COUNT(*) FROM CDR";
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
@@ -51,7 +54,7 @@ public class CDRRepositoryImpl implements CDRRepository {
 
             final List<CallDataRecord> callDataRecordBatchList = callDataRecords.subList(row, toIdx);
 
-            jdbcTemplate.batchUpdate(INSERT_CDR_SQL_QUERY,
+            int[] batchResult = jdbcTemplate.batchUpdate(INSERT_CDR_SQL_QUERY,
 
                     new BatchPreparedStatementSetter() {
                         @Override
@@ -66,14 +69,23 @@ public class CDRRepositoryImpl implements CDRRepository {
                             ps.setFloat(7, callDataRecord.getCharge());
                             ps.setString(8, callDataRecord.getCallResult());
                         }
+
                         @Override
                         public int getBatchSize() {
                             return callDataRecordBatchList.size();
                         }
                     }
             );
+            result += IntStream.of(batchResult).sum();
         }
 
         return result;
     }
+
+    @Override
+    public int totalCDRCount() {
+        return jdbcTemplate.queryForObject(COUNT_RECORDS_SQL_QUERY, Integer.class);
+    }
+
+
 }
