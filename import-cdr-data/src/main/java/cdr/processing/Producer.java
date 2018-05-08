@@ -7,6 +7,7 @@ import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.LineIterator;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Scope;
 import org.springframework.stereotype.Component;
 import org.springframework.util.CollectionUtils;
@@ -23,7 +24,8 @@ import java.util.concurrent.BlockingQueue;
 @Setter
 public class Producer extends Thread {
 
-    private static final int batchSize = 10;
+    @Value("${batchSizeProduces}")
+    private int batchSize;
 
     private BlockingQueue<CallDataRecord> sharedQueue;
     private String path;
@@ -43,25 +45,26 @@ public class Producer extends Thread {
     }
 
     public void parseCDR(final String path) throws IOException {
-        final LineIterator it = FileUtils.lineIterator(new File(path), "UTF-8");
+        final File file = new File(path);
+        final LineIterator it = FileUtils.lineIterator(file, "UTF-8");
+        log.info(String.format("Parsing file (%s) contains Telecom Call Data/Detail Records: ", file.getName()));
         try {
             int row = 0;
-            List<String> lines = new ArrayList<>(batchSize);
+            List<String> linesOfCDR = new ArrayList<>(batchSize);
             while (it.hasNext()) {
                 String line = it.nextLine();
 
-                log.info(line);
-                lines.add(line);
+                linesOfCDR.add(line);
                 row++;
 
                 if (row == batchSize) {
-                    populateQueue(lines);
+                    populateQueue(linesOfCDR);
                     row = 0;
-                    lines = new ArrayList<>(batchSize);
+                    linesOfCDR = new ArrayList<>(batchSize);
                 }
             }
-            if (!CollectionUtils.isEmpty(lines)) {
-                populateQueue(lines);
+            if (!CollectionUtils.isEmpty(linesOfCDR)) {
+                populateQueue(linesOfCDR);
                 // adding CallDataRecord with id equal null to exit message
                 try {
                     sharedQueue.put(CallDataRecord.builder().build());
@@ -84,6 +87,7 @@ public class Producer extends Thread {
                 log.error(e.getMessage());
             }
         }
+        log.info(String.format("Put to shared queue %d rows", lines.size()));
 
         try {
             Thread.sleep(200);
