@@ -17,6 +17,12 @@ dependencies {
     implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.18.2")
     implementation("com.fasterxml.jackson.datatype:jackson-datatype-jdk8:2.18.2")
 
+    // SLF4J API
+    implementation("org.slf4j:slf4j-api:2.0.9")
+
+    // Реализация (например, logback)
+    implementation("ch.qos.logback:logback-classic:1.4.11")
+
     testImplementation(kotlin("test"))
 }
 

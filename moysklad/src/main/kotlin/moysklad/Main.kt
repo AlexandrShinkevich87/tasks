@@ -4,8 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import moysklad.client.feign.ProductApiClient
 import moysklad.configuration.FeignConfiguration
 import moysklad.configuration.JsonConfiguration
-import moysklad.model.Product
-import java.io.File
+import moysklad.service.StockByProductCodeReportService
 
 fun main() {
     val objectMapper: ObjectMapper = JsonConfiguration.objectMapper
@@ -15,25 +14,8 @@ fun main() {
     val productApiClient =
         feignConfig.createClient(
             ProductApiClient::class.java,
-            "https://b2b.moysklad.ru/desktop-api/6wgkgT3JeIM4",
+            "https://b2b.moysklad.ru/desktop-api/",
         )
 
-    val limit = 1000 // Adjust this limit as needed
-    var offset = 0
-    var totalSize: Int
-
-    val allProducts = mutableListOf<Product>()
-
-    do {
-        val response = productApiClient.getProducts(limit, offset)
-        allProducts.addAll(response.products)
-        totalSize = response.size
-        offset += limit
-    } while (offset < totalSize)
-
-    // Save results to a file
-    val outputFile = File("products.json")
-    objectMapper.writerWithDefaultPrettyPrinter().writeValue(outputFile, allProducts)
-
-    println("Fetched ${allProducts.size} products and saved to products.json")
+    StockByProductCodeReportService(productApiClient).generateReportToFile()
 }
