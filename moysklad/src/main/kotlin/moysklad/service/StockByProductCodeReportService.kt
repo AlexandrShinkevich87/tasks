@@ -1,5 +1,7 @@
 package moysklad.service
 
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import moysklad.client.feign.ProductApiClient
 import moysklad.model.StockByProductCodeReport
 import moysklad.model.StockByProductCodeReport.Companion.HEADER
@@ -14,8 +16,10 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+@Suppress("ktlint:standard:chain-method-continuation", "ktlint:standard:function-signature")
 class StockByProductCodeReportService(
     private val productApiClient: ProductApiClient,
+    private val dispatcher: CoroutineDispatcher = Dispatchers.Default,
 ) {
     private fun tryGenerateReport(): ByteArray {
         try {
@@ -25,39 +29,40 @@ class StockByProductCodeReportService(
                         outputStream,
                         StandardCharsets.UTF_8,
                     ),
-                ).use { bufferedWriter ->
+                )
+                    .use { bufferedWriter ->
 //                    bufferedWriter.write(SPECIAL_FIRST_SYMBOL_FOR_CORRECT_OPENING_REPORT_IN_EXCEL)
 //                    bufferedWriter.write(SPECIAL_METADATA_FOR_SEPARATOR)
 //                    bufferedWriter.newLine()
 
-                    writeReportLine(
-                        bufferedWriter,
-                        HEADER,
-                    )
+                        writeReportLine(
+                            bufferedWriter,
+                            HEADER,
+                        )
 
-                    val limit = 50 // Adjust this limit as needed
-                    var offset = 0
-                    var totalSize: Int
+                        val limit = 50 // Adjust this limit as needed
+                        var offset = 0
+                        var totalSize: Int
 
-                    do {
-                        val response = productApiClient.getProducts(limit, offset)
-                        response.products.forEach {
-                            writeReportLine(
-                                bufferedWriter,
-                                StockByProductCodeReport(
-                                    code = it.code,
-                                    stock = it.stock.toString(),
-                                ).toCsvString(),
-                            )
-                        }
+                        do {
+                            val response = productApiClient.getProducts(limit, offset)
+                            response.products.forEach {
+                                writeReportLine(
+                                    bufferedWriter,
+                                    StockByProductCodeReport(
+                                        code = it.code,
+                                        stock = it.stock.toString(),
+                                    ).toCsvString(),
+                                )
+                            }
 
-                        totalSize = response.size
-                        offset += limit
-                    } while (offset < totalSize)
+                            totalSize = response.size
+                            offset += limit
+                        } while (offset < totalSize)
 
-                    bufferedWriter.flush()
-                    return outputStream.toByteArray()
-                }
+                        bufferedWriter.flush()
+                        return outputStream.toByteArray()
+                    }
             }
         } catch (e: IOException) {
             throw IllegalArgumentException("Exception during creation report", e)

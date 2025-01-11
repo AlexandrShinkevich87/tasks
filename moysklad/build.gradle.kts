@@ -16,6 +16,9 @@ dependencies {
     implementation("io.github.openfeign:feign-jackson:12.3")
     implementation("com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.18.2")
     implementation("com.fasterxml.jackson.datatype:jackson-datatype-jdk8:2.18.2")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.1")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-jdk8:1.10.1")
+
 
     // SLF4J API
     implementation("org.slf4j:slf4j-api:2.0.9")
