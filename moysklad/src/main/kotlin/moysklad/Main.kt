@@ -24,7 +24,13 @@ fun main() {
                 "https://b2b.moysklad.ru/desktop-api/",
             )
 
-        StockByProductCodeReportService(productApiClient).generateReportToFile()
+//        logger.info("Write sync start")
+//        StockByProductCodeReportService(productApiClient).generateReportToFile()
+//        logger.info("Write sync finish")
+
+        logger.info("Write async start")
+        StockByProductCodeReportService(productApiClient).generateReportToFileAsync()
+        logger.info("Write async finish")
     }
         .onFailure { e ->
             logger.error("An error occurred during execution: {}", e.message, e)
