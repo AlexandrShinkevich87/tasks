@@ -7,7 +7,6 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withContext
 import moysklad.client.feign.ProductApiClient
 import moysklad.model.Product
 import moysklad.model.StockByProductCodeReport
@@ -21,7 +20,6 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
-import java.nio.file.StandardOpenOption
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -65,6 +63,7 @@ class StockByProductCodeReportService(
                                     StockByProductCodeReport(
                                         code = it.code,
                                         stock = it.stock.toString(),
+                                        price = it.price.toString(),
                                     ).toCsvString(),
                                 )
                             }
@@ -138,9 +137,7 @@ class StockByProductCodeReportService(
                     var processedCount = 0 // Количество обработанных записей
                     do {
                         val response =
-                            withContext(dispatcher) {
-                                productApiClient.getProducts(limit, offset)
-                            }
+                            productApiClient.getProducts(limit, offset)
 
                         channel.send(response.products)
 
@@ -178,6 +175,7 @@ class StockByProductCodeReportService(
                                                         StockByProductCodeReport(
                                                             code = it.code,
                                                             stock = it.stock.toString(),
+                                                            price = it.price.toString(),
                                                         )
                                                             .toCsvString(),
                                                     )
