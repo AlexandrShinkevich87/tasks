@@ -1,0 +1,49 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: polymarket-postgres
+    environment:
+      POSTGRES_DB: polymarket
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: polymarket-redis
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+
+  app:
+    build: .
+    container_name: polymarket-app
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/polymarket
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+
+      POLYMARKET_WS_URL: wss://ws-subscriptions-clob.polymarket.com/ws/market
+      POLYMARKET_GAMMA_API_URL: https://gamma-api.polymarket.com
+      POLYMARKET_MARKET_SELECTION_MODE: AUTO_TOP_ACTIVE
+      POLYMARKET_AUTO_TRACK_COUNT: 3
+      POLYMARKET_RECONNECT_DELAY: 5s
+    ports:
+      - "8080:8080"
+
+volumes:
+  postgres_data:
+  redis_data:

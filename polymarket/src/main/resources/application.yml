@@ -1,0 +1,29 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/polymarket
+    username: postgres
+    password: postgres
+
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      timeout: 3s
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        format_sql: true
+
+  flyway:
+    enabled: true
+
+polymarket:
+  ws-url: wss://ws-subscriptions-clob.polymarket.com/ws/market
+  gamma-api-url: https://gamma-api.polymarket.com
+  market-selection-mode: AUTO_TOP_ACTIVE
+  auto-track-count: 3
+  reconnect-delay: 5s
+  tracked-markets: []
