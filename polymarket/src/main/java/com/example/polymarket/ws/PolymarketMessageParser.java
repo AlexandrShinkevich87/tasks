@@ -4,6 +4,7 @@ import com.example.polymarket.dto.PriceSnapshot;
 import com.example.polymarket.dto.TrackedMarket;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
@@ -13,13 +14,10 @@ import java.util.Map;
 import java.util.Optional;
 
 @Component
+@RequiredArgsConstructor
 public class PolymarketMessageParser {
 
     private final ObjectMapper objectMapper;
-
-    public PolymarketMessageParser(ObjectMapper objectMapper) {
-        this.objectMapper = objectMapper;
-    }
 
     public Optional<ParsedWsMessage> parse(String message, Map<String, TrackedMarket> trackedByAssetId) {
         try {
