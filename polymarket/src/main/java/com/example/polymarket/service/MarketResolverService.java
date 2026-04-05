@@ -72,7 +72,7 @@ public class MarketResolverService {
                 }
 
                 List<String> tokenIds = tokenIdsOpt.get();
-                if (tokenIds.size() >= 1) {
+                if (!tokenIds.isEmpty()) {
                     result.add(new TrackedMarket(tokenIds.get(0), market.getSlug(), market.getQuestion(), "YES"));
                 } else {
                     log.warn("Market '{}' skipped: no token ids", market.getSlug());
