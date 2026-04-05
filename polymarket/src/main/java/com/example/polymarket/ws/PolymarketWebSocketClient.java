@@ -1,64 +1,116 @@
 package com.example.polymarket.ws;
 
-import com.example.polymarket.dto.PriceSnapshot;
+import com.example.polymarket.config.PolymarketProperties;
 import com.example.polymarket.dto.TrackedMarket;
 import com.example.polymarket.service.MarketResolverService;
 import com.example.polymarket.service.PriceUpdateService;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
+import jakarta.annotation.PreDestroy;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
-import java.math.BigDecimal;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.WebSocket;
-import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CompletionStage;
+import java.util.concurrent.*;
 
+@Slf4j
 @Component
+@RequiredArgsConstructor
 public class PolymarketWebSocketClient {
-
-    private static final Logger log = LoggerFactory.getLogger(PolymarketWebSocketClient.class);
 
     private final ObjectMapper objectMapper;
     private final MarketResolverService marketResolverService;
     private final PriceUpdateService priceUpdateService;
-    private final String wsUrl;
+    private final PolymarketProperties properties;
+    private final PolymarketMessageParser messageParser;
 
-    private final Map<String, TrackedMarket> trackedByAssetId = new HashMap<>();
+    private final Map<String, TrackedMarket> trackedByAssetId = new ConcurrentHashMap<>();
+    private final HttpClient httpClient = HttpClient.newHttpClient();
+    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
 
-    public PolymarketWebSocketClient(
-            ObjectMapper objectMapper,
-            MarketResolverService marketResolverService,
-            PriceUpdateService priceUpdateService,
-            @Value("${polymarket.ws-url}") String wsUrl
-    ) {
-        this.objectMapper = objectMapper;
-        this.marketResolverService = marketResolverService;
-        this.priceUpdateService = priceUpdateService;
-        this.wsUrl = wsUrl;
-    }
+    private volatile WebSocket webSocket;
+    private volatile boolean shuttingDown = false;
+    private volatile List<String> assetIds = List.of();
 
     @PostConstruct
     public void start() {
         List<TrackedMarket> trackedMarkets = marketResolverService.resolveTrackedMarkets();
+
+        trackedByAssetId.clear();
         trackedMarkets.forEach(tm -> trackedByAssetId.put(tm.assetId(), tm));
 
-        List<String> assetIds = trackedMarkets.stream()
+        this.assetIds = trackedMarkets.stream()
                 .map(TrackedMarket::assetId)
                 .distinct()
                 .toList();
 
-        HttpClient.newHttpClient()
-                .newWebSocketBuilder()
-                .buildAsync(URI.create(wsUrl), new Listener(assetIds));
+        log.info("Preparing websocket subscription for {} tracked markets and {} asset ids: {}",
+                trackedMarkets.size(), assetIds.size(), assetIds);
+
+        if (assetIds.isEmpty()) {
+            log.warn("No asset ids resolved. WebSocket connection will not be started");
+            return;
+        }
+
+        connect();
+    }
+
+    private void connect() {
+        if (shuttingDown) {
+            return;
+        }
+
+        log.info("Connecting to Polymarket WebSocket: {}", properties.getWsUrl());
+
+        httpClient.newWebSocketBuilder()
+                .buildAsync(URI.create(properties.getWsUrl()), new Listener(assetIds))
+                .whenComplete((socket, error) -> {
+                    if (error != null) {
+                        log.error("Failed to establish WebSocket connection", error);
+                        scheduleReconnect("connect failure");
+                        return;
+                    }
+
+                    this.webSocket = socket;
+                    log.info("WebSocket connection established");
+                });
+    }
+
+    private void scheduleReconnect(String reason) {
+        if (shuttingDown) {
+            return;
+        }
+
+        long delayMs = properties.getReconnectDelay().toMillis();
+        log.warn("Scheduling reconnect in {} ms due to {}", delayMs, reason);
+
+        scheduler.schedule(this::connect, delayMs, TimeUnit.MILLISECONDS);
+    }
+
+    @PreDestroy
+    public void shutdown() {
+        shuttingDown = true;
+        log.info("Shutting down Polymarket WebSocket client");
+
+        WebSocket current = this.webSocket;
+        if (current != null) {
+            try {
+                current.sendClose(WebSocket.NORMAL_CLOSURE, "Application shutdown")
+                        .toCompletableFuture()
+                        .get(5, TimeUnit.SECONDS);
+            } catch (Exception e) {
+                log.warn("Failed to close websocket gracefully", e);
+                current.abort();
+            }
+        }
+
+        scheduler.shutdownNow();
     }
 
     private class Listener implements WebSocket.Listener {
@@ -79,10 +131,12 @@ public class PolymarketWebSocketClient {
 
                 String json = objectMapper.writeValueAsString(payload);
                 webSocket.sendText(json, true);
-                log.info("Subscribed to {} assets", assetIds.size());
+
+                log.info("Subscribed to {} asset ids: {}", assetIds.size(), assetIds);
                 WebSocket.Listener.super.onOpen(webSocket);
             } catch (Exception e) {
                 log.error("Failed to subscribe", e);
+                scheduleReconnect("subscription failure");
             }
         }
 
@@ -92,97 +146,26 @@ public class PolymarketWebSocketClient {
             if (last) {
                 String message = buffer.toString();
                 buffer.setLength(0);
-                handleMessage(message);
+
+                messageParser.parse(message, trackedByAssetId)
+                        .ifPresent(parsed -> priceUpdateService.handlePriceUpdate(parsed.snapshot()));
             }
+
             return WebSocket.Listener.super.onText(webSocket, data, last);
         }
 
-        private void handleMessage(String message) {
-            try {
-                JsonNode root = objectMapper.readTree(message);
-                String eventType = root.path("event_type").asText();
-
-                if ("best_bid_ask".equals(eventType)) {
-                    handleBestBidAsk(root);
-                } else if ("last_trade_price".equals(eventType)) {
-                    handleLastTradePrice(root);
-                }
-            } catch (Exception e) {
-                log.warn("Failed to parse ws message: {}", message, e);
-            }
+        @Override
+        public CompletionStage<?> onClose(WebSocket webSocket, int statusCode, String reason) {
+            log.warn("WebSocket closed. statusCode={}, reason={}", statusCode, reason);
+            scheduleReconnect("close");
+            return WebSocket.Listener.super.onClose(webSocket, statusCode, reason);
         }
 
-        private void handleBestBidAsk(JsonNode root) {
-            String assetId = root.path("asset_id").asText();
-            TrackedMarket tracked = trackedByAssetId.get(assetId);
-            if (tracked == null) {
-                return;
-            }
-
-            BigDecimal bestBid = decimalOrNull(root.get("best_bid"));
-            BigDecimal bestAsk = decimalOrNull(root.get("best_ask"));
-
-            if (bestBid == null || bestAsk == null) {
-                return;
-            }
-
-            BigDecimal midpoint = bestBid.add(bestAsk)
-                    .divide(BigDecimal.valueOf(2), 8, java.math.RoundingMode.HALF_UP);
-
-            PriceSnapshot snapshot = new PriceSnapshot(
-                    assetId,
-                    tracked.marketSlug(),
-                    tracked.question(),
-                    tracked.outcome(),
-                    "best_bid_ask",
-                    midpoint,
-                    bestBid,
-                    bestAsk,
-                    epochMillis(root.path("timestamp").asText(null))
-            );
-
-            priceUpdateService.handlePriceUpdate(snapshot);
-        }
-
-        private void handleLastTradePrice(JsonNode root) {
-            String assetId = root.path("asset_id").asText();
-            TrackedMarket tracked = trackedByAssetId.get(assetId);
-            if (tracked == null) {
-                return;
-            }
-
-            BigDecimal price = decimalOrNull(root.get("price"));
-            if (price == null) {
-                return;
-            }
-
-            PriceSnapshot snapshot = new PriceSnapshot(
-                    assetId,
-                    tracked.marketSlug(),
-                    tracked.question(),
-                    tracked.outcome(),
-                    "last_trade_price",
-                    price,
-                    null,
-                    null,
-                    epochMillis(root.path("timestamp").asText(null))
-            );
-
-            priceUpdateService.handlePriceUpdate(snapshot);
-        }
-
-        private BigDecimal decimalOrNull(JsonNode node) {
-            if (node == null || node.isNull() || node.asText().isBlank()) {
-                return null;
-            }
-            return new BigDecimal(node.asText());
-        }
-
-        private Instant epochMillis(String timestamp) {
-            if (timestamp == null || timestamp.isBlank()) {
-                return null;
-            }
-            return Instant.ofEpochMilli(Long.parseLong(timestamp));
+        @Override
+        public void onError(WebSocket webSocket, Throwable error) {
+            log.error("WebSocket error", error);
+            scheduleReconnect("error");
+            WebSocket.Listener.super.onError(webSocket, error);
         }
     }
 }

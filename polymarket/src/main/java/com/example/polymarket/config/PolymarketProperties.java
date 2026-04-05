@@ -14,7 +14,7 @@ import java.util.List;
 public class PolymarketProperties {
     private String wsUrl;
     private String gammaApiUrl;
-    private SelectionMode marketSelectionMode = SelectionMode.CONFIG;
+    private SelectionMode marketSelectionMode = SelectionMode.AUTO_TOP_ACTIVE;
     private int autoTrackCount = 3;
     private Duration reconnectDelay = Duration.ofSeconds(5);
     private boolean useRedis = false;
