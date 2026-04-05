@@ -16,9 +16,12 @@ spring:
     properties:
       hibernate:
         format_sql: true
+        default_schema: polymarket
 
   flyway:
     enabled: true
+    default-schema: polymarket
+    schemas: polymarket
 
 polymarket:
   ws-url: wss://ws-subscriptions-clob.polymarket.com/ws/market
