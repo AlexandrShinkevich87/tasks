@@ -5,50 +5,46 @@ import ru.mentoring.cinema.model.*;
 
 import java.time.Duration;
 import java.util.*;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
 
 import static ru.mentoring.cinema.model.Code.*;
+import static ru.mentoring.cinema.model.NotificationState.PENDING;
 
 /**
- * Ведет учет покупок, занятых мест и подтверждений для клиентов.
+ * Согласованно хранит покупки, занятые места и задания уведомлений в памяти одного процесса.
+ * Блокировка защищает потоки, но не обеспечивает сохранность после аварии процесса.
  */
 public final class InMemoryBookingStore {
     private final ReentrantLock transaction = new ReentrantLock();
-    private final Condition notificationCompleted = transaction.newCondition();
     private final Map<UUID, Order> ordersById = new LinkedHashMap<>();
     private final Map<CustomerPurchaseRequestKey, Confirmed> confirmedPurchasesByCustomerPurchaseRequestKey = new HashMap<>();
     private final Map<Long, Set<Seat>> soldSeatsByScreeningId = new HashMap<>();
-    private final ArrayBlockingQueue<OrderCreated> outgoing;
-    private final Map<UUID, Delivery> deliveryResultsByEventId = new LinkedHashMap<>();
+    private final InMemoryOutbox outbox = new InMemoryOutbox(transaction);
 
-    Object lock = new Object();
     /**
-     * Задает допустимое число подтверждений, ожидающих отправки.
-     *
-     * @param queueCapacity максимальное число ожидающих уведомлений
+     * Создает пустое хранилище; число ожидающих уведомлений ограничено доступной памятью.
      */
-    public InMemoryBookingStore(int queueCapacity) {
-        outgoing = new ArrayBlockingQueue<>(queueCapacity);
+    public InMemoryBookingStore() {
     }
 
     /**
-     * Оформляет все выбранные места и назначает уведомление; при отказе не продает ни одного места.
-     * Можно ли продать все выбранные места и зарегистрировать заказ?
+     * Оформляет все выбранные места и регистрирует PENDING-уведомление под одной блокировкой.
+     * Ожидание или ошибка отправщика не препятствуют новым покупкам.
+     * Фабрика выполняется под общей блокировкой: только короткое создание заказа, без I/O,
+     * ожиданий и повторных вызовов операций хранилища. Проверка начала сеанса остается внутри нее.
      *
      * @param request запрос покупки
-     * @param factory создание заказа по данным покупки
+     * @param factory создание заказа после проверки повтора и занятости мест
      * @return новый заказ или результат точного повтора
-     * @throws BookingException если запрос изменен, место занято или новые уведомления временно не принимаются
+     * @throws BookingException если запрос изменен или хотя бы одно место занято
      */
     public Order confirmPurchase(BookingRequest request, Supplier<Order> factory) {
+        Objects.requireNonNull(request, "request");
+        Objects.requireNonNull(factory, "factory");
         transaction.lock();
-
         try {
-            CustomerPurchaseRequestKey purchaseRequestKey = new CustomerPurchaseRequestKey(request.customer().id(), request.requestId());
+            var purchaseRequestKey = new CustomerPurchaseRequestKey(request.customer().id(), request.requestId());
             Confirmed previous = confirmedPurchasesByCustomerPurchaseRequestKey.get(purchaseRequestKey);
             if (previous != null) {
                 if (!previous.request().equals(request))
@@ -62,17 +58,23 @@ public final class InMemoryBookingStore {
                     throw new BookingException(SEAT_TAKEN, "Seat already sold: " + seat);
             }
 
-            Order order = factory.get(); // До завершения проверок состояние не меняется.
-            OrderCreated event = new OrderCreated(UUID.randomUUID(), order.id(), order.createdAt());
-            // Не ждем освобождения очереди, удерживая блокировку покупки.
-            // При заполненной очереди заказ не сохраняется.
-            if (!outgoing.offer(event))
-                throw new BookingException(QUEUE_FULL, "Notification queue is full; retry later");
+            // Все бизнес-проверки и подготовка заказа и события — до изменения общего состояния.
+            Order order = Objects.requireNonNull(factory.get(), "Order factory returned null");
+            if (ordersById.containsKey(order.id()))
+                throw new IllegalStateException("Order ID already exists");
+            var event = new OrderCreated(UUID.randomUUID(), order.id(), order.createdAt());
+            var job = new NotificationJob(event, PENDING, null, null);
+            var confirmed = new Confirmed(request, order);
+            Set<Seat> updatedSeats = soldSeatsByScreeningId.get(request.screeningId());
+            if (updatedSeats == null) updatedSeats = new HashSet<>();
 
-            // Отправщик уже может взять событие, но прочитает заказ после освобождения блокировки.
+            // Каждый читатель и worker видит весь результат после освобождения той же блокировки.
+            // Сначала регистрация outbox: ее проверки не должны оставить частичную покупку.
+            outbox.register(job);
             ordersById.put(order.id(), order);
-            soldSeatsByScreeningId.computeIfAbsent(request.screeningId(), ignored -> new HashSet<>()).addAll(request.seats());
-            confirmedPurchasesByCustomerPurchaseRequestKey.put(purchaseRequestKey, new Confirmed(request, order));
+            updatedSeats.addAll(request.seats());
+            soldSeatsByScreeningId.put(request.screeningId(), updatedSeats);
+            confirmedPurchasesByCustomerPurchaseRequestKey.put(purchaseRequestKey, confirmed);
             return order;
         } finally {
             transaction.unlock();
@@ -97,7 +99,7 @@ public final class InMemoryBookingStore {
     /**
      * Возвращает оформленные заказы в порядке покупки.
      *
-     * @return список оформленных заказов
+     * @return независимый неизменяемый список заказов
      */
     public List<Order> findAllOrders() {
         transaction.lock();
@@ -112,7 +114,7 @@ public final class InMemoryBookingStore {
      * Возвращает проданные места указанного сеанса.
      *
      * @param screeningId идентификатор сеанса
-     * @return проданные места сеанса
+     * @return снимок проданных мест
      */
     public Set<Seat> findOccupiedSeatsByScreeningId(long screeningId) {
         transaction.lock();
@@ -124,68 +126,85 @@ public final class InMemoryBookingStore {
     }
 
     /**
-     * Выбирает следующее подтверждение для отправки, ожидая не дольше заданного времени.
-     * Какое подтверждение нужно отправить следующим?
+     * Возвращает снимки заданий в порядке регистрации.
      *
-     * @param timeout предельное время ожидания
-     * @return подтверждение покупки или пустой результат, если время ожидания истекло
-     * @throws InterruptedException если ожидание подтверждения для отправки прервано
+     * @return неизменяемые снимки всех состояний outbox
      */
-    public Optional<OrderCreated> pollNextNotification(Duration timeout) throws InterruptedException {
-        return Optional.ofNullable(outgoing.poll(timeout.toNanos(), TimeUnit.NANOSECONDS));
+    public List<NotificationJob> findAllNotificationJobs() {
+        return outbox.findAllNotificationJobs();
     }
 
     /**
-     * Учитывает результат доставки подтверждения; повторный результат одного события игнорирует.
-     * Чем закончилась отправка подтверждения?
+     * Проверяет наличие ожидающей работы без построения полного отчета.
      *
-     * @param delivery итог попыток доставки
+     * @return true, если есть PENDING
      */
-    public void recordNotificationDelivery(Delivery delivery) {
-        transaction.lock();
-        try {
-            deliveryResultsByEventId.putIfAbsent(delivery.event().eventId(), delivery);
-            notificationCompleted.signalAll();
-        } finally {
-            transaction.unlock();
-        }
+    public boolean hasPendingNotifications() {
+        return outbox.hasPendingNotifications();
     }
 
     /**
-     * Возвращает число ожидающих подтверждений и результаты завершенных отправок.
-     * Сколько подтверждений ожидают отправки и сколько завершились успешно или с ошибкой?
+     * Закрепляет ожидающее задание за одним worker, сохраняя его в outbox.
      *
-     * @return текущее состояние уведомлений
+     * @param timeout общее ожидание блокировки и задания, ноль означает проверку без ожидания
+     * @return захват задания или пустой результат
+     * @throws InterruptedException если ожидание прервано
+     */
+    public Optional<NotificationClaim> claimNextNotification(Duration timeout) throws InterruptedException {
+        return outbox.claimNextNotification(timeout);
+    }
+
+    /**
+     * Принимает результат только текущего владельца, игнорируя устаревшие подтверждения.
+     *
+     * @param claim право обработки одного задания
+     * @param delivery итог текущего цикла отправки
+     * @return true, если результат принят
+     */
+    public boolean completeNotification(NotificationClaim claim, Delivery delivery) {
+        return outbox.completeNotification(claim, delivery);
+    }
+
+    /**
+     * Возвращает прерванное задание в ожидание; вызывать должен завершающийся владелец.
+     * Число терминальных состояний не меняется, поэтому их наблюдатели не пробуждаются.
+     *
+     * @param claim текущий захват завершающегося worker
+     * @return true, если задание возвращено
+     */
+    public boolean releaseNotification(NotificationClaim claim) {
+        return outbox.releaseNotification(claim);
+    }
+
+    /**
+     * Возвращает только FAILED в ожидание с прежним eventId и без старого результата.
+     *
+     * @param eventId идентификатор события
+     * @return true, если повтор разрешен
+     */
+    public boolean retryFailedNotification(UUID eventId) {
+        return outbox.retryFailedNotification(eventId);
+    }
+
+    /**
+     * Строит снимок ожидающих, выполняемых и текущих терминальных результатов.
+     *
+     * @return отчет с результатами SENT + FAILED
      */
     public Report getNotificationReport() {
-        transaction.lock();
-        try {
-            return new Report(outgoing.size(), List.copyOf(deliveryResultsByEventId.values()));
-        } finally {
-            transaction.unlock();
-        }
+        return outbox.getNotificationReport();
     }
 
     /**
-     * Ожидает обработку заданного числа уведомлений до истечения времени ожидания.
+     * Ожидает заданное число текущих терминальных состояний SENT + FAILED.
+     * После ручного повтора FAILED их число временно уменьшается.
      *
-     * @param count   необходимое число обработанных уведомлений
-     * @param timeout предельное время ожидания
-     * @return true, если нужное число уведомлений обработано вовремя
-     * @throws InterruptedException если ожидание результатов отправки прервано
+     * @param count требуемое число терминальных состояний
+     * @param timeout общее время ожидания блокировки и результатов
+     * @return true, если число достигнуто вовремя
+     * @throws InterruptedException если ожидание прервано
      */
     public boolean awaitProcessedNotifications(int count, Duration timeout) throws InterruptedException {
-        if (count < 0 || timeout.isNegative()) throw new IllegalArgumentException("Invalid wait");
-        long remaining = timeout.toNanos();
-        transaction.lockInterruptibly();
-        try {
-            while (deliveryResultsByEventId.size() < count) {
-                if (remaining <= 0) return false;
-                remaining = notificationCompleted.awaitNanos(remaining);
-            }
-            return true;
-        } finally {
-            transaction.unlock();
-        }
+        return outbox.awaitProcessedNotifications(count, timeout);
     }
 }

@@ -5,6 +5,7 @@ import ru.mentoring.cinema.exception.BookingException;
 import ru.mentoring.cinema.model.BookingRequest;
 import ru.mentoring.cinema.model.Customer;
 import ru.mentoring.cinema.model.Order;
+import ru.mentoring.cinema.model.NotificationState;
 import ru.mentoring.cinema.model.Seat;
 import ru.mentoring.cinema.notification.NotificationDispatcher;
 import ru.mentoring.cinema.notification.RecordingNotificationSender;
@@ -31,7 +32,7 @@ import static ru.mentoring.cinema.model.Code.*;
 class BookingFlowTest {
     static final Clock CLOCK = Clock.fixed(Instant.parse("2030-01-01T08:00:00Z"), ZoneOffset.UTC);
     final InMemoryCatalogue catalogue = SampleCatalogue.createSampleCatalogue(CLOCK);
-    final InMemoryBookingStore store = new InMemoryBookingStore(256);
+    final InMemoryBookingStore store = new InMemoryBookingStore();
     final BookingService service = new BookingService(catalogue, store, CLOCK);
 
     /**
@@ -125,11 +126,15 @@ class BookingFlowTest {
     public void repeatsReturnOriginalOrderAndDoNotPublishAnotherNotification() {
         var request = createBookingRequest("alice", "stable-key", 101, new Seat(1, 1));
         Order original = service.purchaseTickets(request);
+        var originalJobs = store.findAllNotificationJobs();
         assertEquals(original, service.purchaseTickets(request));
         assertEquals(1, store.findAllOrders().size());
         assertEquals(1, store.getNotificationReport().queued());
         assertEquals(REQUEST_CONFLICT, assertThrows(BookingException.class, () ->
                 service.purchaseTickets(createBookingRequest("alice", "stable-key", 101, new Seat(1, 2)))).getErrorCode());
+        assertEquals(originalJobs, store.findAllNotificationJobs());
+        assertEquals(1, store.findAllOrders().size());
+        assertFalse(store.findOccupiedSeatsByScreeningId(101).contains(new Seat(1, 2)));
         // Ключ привязан к клиенту: другой клиент может использовать такой же requestId.
         service.purchaseTickets(createBookingRequest("bob", "stable-key", 101, new Seat(1, 2)));
         assertEquals(2, store.findAllOrders().size());
@@ -148,24 +153,30 @@ class BookingFlowTest {
     }
 
     /**
-     * Проверяет отказ без частичной продажи при заполненной очереди.
+     * Проверяет продолжение продаж без отправщика и сохранение уведомления каждого заказа.
      *
-     * @throws Exception если покупку или отправку подтверждения не удалось завершить
+     * @throws Exception если конкурентные покупки не завершились вовремя
      */
     @Test
-    public void queueBackpressureDoesNotLeaveAnOrderOrSoldSeat() throws Exception {
-        var boundedStore = new InMemoryBookingStore(1);
-        var booking = new BookingService(catalogue, boundedStore, CLOCK);
-        booking.purchaseTickets(createBookingRequest("alice", "1", 101, new Seat(1, 1)));
-        assertEquals(QUEUE_FULL, assertThrows(BookingException.class, () ->
-                booking.purchaseTickets(createBookingRequest("bob", "1", 101, new Seat(1, 2)))).getErrorCode());
-        assertEquals(1, boundedStore.findAllOrders().size());
-        assertFalse(boundedStore.findOccupiedSeatsByScreeningId(101).contains(new Seat(1, 2)));
-        assertTrue(boundedStore.pollNextNotification(Duration.ZERO).isPresent());
-        booking.purchaseTickets(createBookingRequest("bob", "1", 101, new Seat(1, 2)));
-        assertEquals(2, boundedStore.findAllOrders().size());
-    }
+    public void salesContinueWithoutNotificationWorkersAndKeepEveryEvent() throws Exception {
+        var seats = catalogue.findHallById(1).orElseThrow().seats().stream().sorted().toList();
+        var orderIds = runConcurrently(seats.size(), i -> () ->
+                service.purchaseTickets(createBookingRequest("c" + i, "r", 101, seats.get(i))).id());
 
+        assertEquals(seats.size(), new HashSet<>(orderIds).size());
+        assertEquals(seats.size(), store.findAllOrders().size());
+        assertEquals(new HashSet<>(seats), store.findOccupiedSeatsByScreeningId(101));
+        var jobs = store.findAllNotificationJobs();
+        assertEquals(seats.size(), jobs.size());
+        assertEquals(new HashSet<>(orderIds), jobs.stream()
+                .map(job -> job.event().orderId()).collect(java.util.stream.Collectors.toSet()));
+        assertEquals(jobs.size(), jobs.stream().map(job -> job.event().eventId()).distinct().count());
+        assertTrue(jobs.stream().allMatch(job -> job.state() == NotificationState.PENDING));
+        assertTrue(jobs.stream().allMatch(job -> job.claimToken() == null && job.delivery() == null));
+        assertEquals(seats.size(), store.getNotificationReport().queued());
+        assertEquals(0, store.getNotificationReport().inFlight());
+        assertTrue(store.getNotificationReport().completed().isEmpty());
+    }
     /**
      * Проверяет, что из ста покупателей одного кресла выигрывает один.
      *
@@ -246,29 +257,40 @@ class BookingFlowTest {
     }
 
     /**
-     * Моделирует одновременные покупки и получает результат каждого участника.
+     * Дожидается готовности всех участников, открывает общий старт и собирает результаты.
      *
-     * @param <T>   тип результата покупки
-     * @param count количество одновременных покупателей
-     * @param task  покупка для участника с указанным номером
+     * @param <T>   тип результата действия
+     * @param count количество участников
+     * @param task  действие для участника с указанным номером
      * @return результаты в порядке номеров участников
-     * @throws Exception если покупку не удалось завершить или истекло время ее ожидания
+     * @throws Exception если действие не завершилось или истекло время ожидания
      */
-    private static <T> List<T> runConcurrently(int count, java.util.function.IntFunction<Callable<T>> task) throws Exception {
+    static <T> List<T> runConcurrently(int count, java.util.function.IntFunction<Callable<T>> task) throws Exception {
+        CountDownLatch ready = new CountDownLatch(count);
         CountDownLatch start = new CountDownLatch(1);
         List<Future<T>> futures = new ArrayList<>();
         try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
-            for (int i = 0; i < count; i++) {
-                var action = task.apply(i);
-                futures.add(executor.submit(() -> {
-                    start.await();
-                    return action.call();
-                }));
+            try {
+                for (int i = 0; i < count; i++) {
+                    var action = task.apply(i);
+                    futures.add(executor.submit(() -> {
+                        ready.countDown();
+                        start.await();
+                        return action.call();
+                    }));
+                }
+                assertTrue(ready.await(10, TimeUnit.SECONDS), "Участники не подготовились к общему старту");
+                start.countDown();
+                List<T> results = new ArrayList<>();
+                for (var future : futures) results.add(future.get(10, TimeUnit.SECONDS));
+                return results;
+            } finally {
+                start.countDown();
+                for (var future : futures) {
+                    if (!future.isDone()) future.cancel(true);
+                }
+                executor.shutdownNow();
             }
-            start.countDown();
-            List<T> results = new ArrayList<>();
-            for (var future : futures) results.add(future.get(10, TimeUnit.SECONDS));
-            return results;
         }
     }
 }

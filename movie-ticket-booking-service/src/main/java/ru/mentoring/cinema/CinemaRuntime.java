@@ -32,7 +32,7 @@ public final class CinemaRuntime implements AutoCloseable {
      */
     public CinemaRuntime(Clock clock) {
         catalogue = SampleCatalogue.createSampleCatalogue(clock);
-        store = new InMemoryBookingStore(256);
+        store = new InMemoryBookingStore();
         sender = new RecordingNotificationSender();
         bookings = new BookingService(catalogue, store, clock);
         movies = new CatalogueService(catalogue, store, clock.withZone(java.time.ZoneId.of("Asia/Almaty")));
